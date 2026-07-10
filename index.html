@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="description" content="Invaders-Breakout — hybrid Space Invaders and Breakout arcade game" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <title>Invaders-Breakout</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="top-bar">
+      <h1 class="logo">Invaders<span>·</span>Breakout</h1>
+      <div class="hud" id="hud" aria-live="polite">
+        <div class="hud-item"><span class="label">Score</span><span id="score">0</span></div>
+        <div class="hud-item"><span class="label">High</span><span id="high-score">0</span></div>
+        <div class="hud-item"><span class="label">Level</span><span id="level">1</span></div>
+        <div class="hud-item"><span class="label">Lives</span><span id="lives">❤❤❤</span></div>
+      </div>
+    </header>
+
+    <main class="stage-wrap">
+      <canvas id="game" width="480" height="640" role="img" aria-label="Invaders-Breakout game canvas"></canvas>
+
+      <div id="overlay" class="overlay">
+        <div class="panel" id="panel">
+          <h2 id="panel-title">Invaders-Breakout</h2>
+          <p id="panel-message">
+            Defend your base. Break the bricks. Blast the invaders.
+          </p>
+          <ul class="controls-list">
+            <li><kbd>←</kbd><kbd>→</kbd> or mouse / touch — move paddle</li>
+            <li><kbd>Space</kbd> or click / tap — fire lasers</li>
+            <li>Break special bricks for power-ups</li>
+          </ul>
+          <button type="button" id="start-btn" class="btn primary">Start Game</button>
+          <button type="button" id="mute-btn" class="btn ghost" aria-pressed="false">Sound: On</button>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <p>Hybrid arcade · Space Invaders + Breakout · Built with Grok Build</p>
+    </footer>
+  </div>
+
+  <script src="js/game.js"></script>
+</body>
+</html>
