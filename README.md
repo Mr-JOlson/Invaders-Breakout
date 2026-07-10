@@ -7,13 +7,10 @@ Defend your base by controlling a paddle that can also fire upward. Destroy wave
 
 ## How to Play
 - **Mouse / Arrow Keys** (or A/D): Move paddle left/right
-- **Space / Click / Tap**: Fire lasers upward
-- **Objective**: Clear invaders (and the brick field) each level without letting invaders reach the bottom or enemy fire hit your paddle
-- **Power-ups** (special marked bricks):
-  - ◎ **Multi** — bouncing breakout balls
-  - ↔ **Wide** — wider paddle
-  - ⚡ **Laser** — rapid fire
-  - ♥ **Life** — extra life (or score bonus if full)
+- **Space / Click / Tap**: Launch **one** breakout ball — only when no balls are currently in play
+- **Objective**: Clear invaders each level without letting them reach the bottom or hit your paddle with enemy fire
+- **Ball physics**: Balls bounce off walls, paddle, and bricks; **balls destroy invaders** on contact
+- **Specialty bricks** (`2×`, `3×`, `4×`): Multiply every breakout ball currently on screen (cap applies for performance)
 
 ## Tech Stack
 - Vanilla HTML5 Canvas + JavaScript

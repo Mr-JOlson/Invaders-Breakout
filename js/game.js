@@ -1,6 +1,9 @@
 /**
  * Invaders-Breakout
- * Hybrid arcade: Space Invaders descent + Breakout bricks + paddle lasers
+ * Hybrid arcade: Space Invaders descent + Breakout ball physics
+ * - Fire one breakout ball (Space/click) only when no balls are active
+ * - Special bricks multiply balls on screen (2×, 3×, 4×)
+ * - Balls destroy invaders and bricks
  */
 (() => {
   "use strict";
@@ -28,9 +31,8 @@
   const PADDLE_Y = H - 48;
   const PADDLE_H = 12;
   const PADDLE_BASE_W = 72;
-  const LASER_SPEED = 520;
-  const LASER_COOLDOWN = 0.22;
-  const BALL_SPEED = 280;
+  const BALL_SPEED = 300;
+  const BALL_MAX = 24;
   const INVADER_COLS = 8;
   const INVADER_ROWS = 4;
   const BRICK_ROWS = 4;
@@ -38,7 +40,6 @@
   const MAX_LIVES = 3;
 
   const BRICK_COLORS = ["#fc8181", "#f6ad55", "#f6e05e", "#68d391", "#63b3ed", "#b794f4"];
-  const POWER_TYPES = ["multi", "wide", "laser", "life"];
 
   // ─── Audio (Web Audio API, no assets) ───────────────────────
   let audioCtx = null;
@@ -68,15 +69,16 @@
   }
 
   const sfx = {
-    shoot: () => beep(880, 0.06, "square", 0.03),
+    shoot: () => beep(660, 0.07, "triangle", 0.04),
     brick: () => beep(320, 0.08, "triangle", 0.05),
     invader: () => {
       beep(180, 0.1, "sawtooth", 0.04);
       setTimeout(() => beep(120, 0.12, "sawtooth", 0.03), 40);
     },
-    power: () => {
-      beep(523, 0.08, "sine", 0.05);
-      setTimeout(() => beep(784, 0.1, "sine", 0.05), 70);
+    multi: () => {
+      beep(440, 0.07, "sine", 0.05);
+      setTimeout(() => beep(660, 0.08, "sine", 0.05), 60);
+      setTimeout(() => beep(880, 0.1, "sine", 0.05), 120);
     },
     hit: () => beep(90, 0.25, "sawtooth", 0.06),
     level: () => {
@@ -90,7 +92,6 @@
   // ─── Input ──────────────────────────────────────────────────
   const keys = new Set();
   let pointerX = null;
-  let pointerDown = false;
   let fireHeld = false;
 
   window.addEventListener("keydown", (e) => {
@@ -112,13 +113,11 @@
     pointerX = canvasPoint(e.clientX);
   });
   canvas.addEventListener("mousedown", (e) => {
-    pointerDown = true;
     fireHeld = true;
     pointerX = canvasPoint(e.clientX);
     ensureAudio();
   });
   window.addEventListener("mouseup", () => {
-    pointerDown = false;
     if (![...keys].some((k) => k === " " || k === "Spacebar")) fireHeld = false;
   });
 
@@ -128,7 +127,6 @@
       e.preventDefault();
       const t = e.changedTouches[0];
       pointerX = canvasPoint(t.clientX);
-      pointerDown = true;
       fireHeld = true;
       ensureAudio();
     },
@@ -147,29 +145,24 @@
     "touchend",
     (e) => {
       e.preventDefault();
-      pointerDown = false;
       fireHeld = false;
     },
     { passive: false }
   );
 
   // ─── Game state ─────────────────────────────────────────────
-  let state = "menu"; // menu | playing | paused | levelup | gameover
+  let state = "menu"; // menu | playing | levelup | gameover
   let score = 0;
   let highScore = Number(localStorage.getItem(HIGH_KEY) || 0);
   let level = 1;
   let lives = MAX_LIVES;
   let lastTime = 0;
   let shake = 0;
-  let laserCooldown = 0;
-  let wideTimer = 0;
-  let rapidTimer = 0;
   let stars = [];
   let particles = [];
   let floatingTexts = [];
 
   let paddle = { x: W / 2, w: PADDLE_BASE_W, h: PADDLE_H };
-  let lasers = [];
   let balls = [];
   let invaders = [];
   let invaderDir = 1;
@@ -178,7 +171,6 @@
   let invaderShootTimer = 0;
   let enemyShots = [];
   let bricks = [];
-  let powerups = [];
 
   // ─── Helpers ────────────────────────────────────────────────
   function clamp(v, a, b) {
@@ -250,6 +242,16 @@
     floatingTexts.push({ x, y, text, color, life: 0.9, vy: -40 });
   }
 
+  function pickMultiplier() {
+    // Prefer 2×, then 3×, rare 4×; higher levels add a bit more 3×/4×
+    const roll = Math.random();
+    const p4 = 0.08 + Math.min(level, 8) * 0.01;
+    const p3 = 0.22 + Math.min(level, 8) * 0.015;
+    if (roll < p4) return 4;
+    if (roll < p4 + p3) return 3;
+    return 2;
+  }
+
   // ─── Level builders ─────────────────────────────────────────
   function buildBricks() {
     bricks = [];
@@ -262,9 +264,9 @@
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < BRICK_COLS; c++) {
-        // occasional gaps for shot lanes
         if (level > 1 && Math.random() < 0.08) continue;
-        const isSpecial = Math.random() < 0.12 + level * 0.01;
+        const isSpecial = Math.random() < 0.14 + level * 0.01;
+        const mult = isSpecial ? pickMultiplier() : null;
         bricks.push({
           x: marginX + c * (bw + gap),
           y: top + r * (bh + gap),
@@ -272,9 +274,15 @@
           h: bh,
           hp: r === 0 && level >= 3 ? 2 : 1,
           maxHp: r === 0 && level >= 3 ? 2 : 1,
-          color: BRICK_COLORS[(r + c) % BRICK_COLORS.length],
+          color: isSpecial
+            ? mult === 4
+              ? "#f6e05e"
+              : mult === 3
+                ? "#b794f4"
+                : "#63b3ed"
+            : BRICK_COLORS[(r + c) % BRICK_COLORS.length],
           special: isSpecial,
-          power: isSpecial ? POWER_TYPES[Math.floor(Math.random() * POWER_TYPES.length)] : null,
+          mult,
         });
       }
     }
@@ -317,16 +325,11 @@
   function resetPaddle() {
     paddle.x = W / 2;
     paddle.w = PADDLE_BASE_W;
-    wideTimer = 0;
-    rapidTimer = 0;
-    laserCooldown = 0;
   }
 
   function clearProjectiles() {
-    lasers = [];
     balls = [];
     enemyShots = [];
-    powerups = [];
   }
 
   function startLevel(n) {
@@ -375,61 +378,73 @@
     }
   }
 
-  // ─── Combat / power-ups ─────────────────────────────────────
-  function fireLaser() {
-    const cd = rapidTimer > 0 ? LASER_COOLDOWN * 0.4 : LASER_COOLDOWN;
-    if (laserCooldown > 0) return;
-    laserCooldown = cd;
-    const count = rapidTimer > 0 ? 2 : 1;
-    for (let i = 0; i < count; i++) {
-      const offset = count === 1 ? 0 : i === 0 ? -8 : 8;
-      lasers.push({
-        x: paddle.x + offset - 2,
-        y: PADDLE_Y - 8,
-        w: 4,
-        h: 14,
-        vy: -LASER_SPEED,
-      });
-    }
-    sfx.shoot();
-  }
-
-  function spawnBall(x, y, angle) {
-    const a = angle ?? rand(-Math.PI * 0.75, -Math.PI * 0.25);
-    balls.push({
+  // ─── Ball combat ────────────────────────────────────────────
+  function makeBall(x, y, angle, speed = BALL_SPEED) {
+    const a = angle;
+    return {
       x,
       y,
       r: 6,
-      vx: Math.cos(a) * BALL_SPEED,
-      vy: Math.sin(a) * BALL_SPEED,
-    });
+      vx: Math.cos(a) * speed,
+      vy: Math.sin(a) * speed,
+    };
   }
 
-  function dropPowerup(x, y, type) {
-    powerups.push({ x, y, w: 20, h: 20, type, vy: 90 + level * 5 });
+  function spawnBall(x, y, angle) {
+    if (balls.length >= BALL_MAX) return;
+    const a = angle ?? -Math.PI / 2 + rand(-0.35, 0.35);
+    balls.push(makeBall(x, y, a));
   }
 
-  function applyPower(type) {
-    sfx.power();
-    floatText(paddle.x, PADDLE_Y - 20, type.toUpperCase(), "#4fd1c5");
-    if (type === "multi") {
-      const n = Math.max(1, 2 - balls.length);
-      for (let i = 0; i < n; i++) spawnBall(paddle.x, PADDLE_Y - 20, rand(-2.5, -0.6));
-      if (balls.length === 0) spawnBall(paddle.x, PADDLE_Y - 20, -Math.PI / 2 + rand(-0.3, 0.3));
-    } else if (type === "wide") {
-      wideTimer = 12;
-      paddle.w = PADDLE_BASE_W * 1.55;
-    } else if (type === "laser") {
-      rapidTimer = 10;
-    } else if (type === "life") {
-      if (lives < 5) {
-        lives += 1;
-        updateHud();
-      } else {
-        score += 500;
-        floatText(paddle.x, PADDLE_Y - 36, "+500", "#f6ad55");
+  /**
+   * Launch a single breakout ball from the paddle.
+   * Only allowed when no balls are currently in play.
+   */
+  function fireBall() {
+    if (balls.length > 0) return false;
+    // Slight aim from recent paddle motion via pointer offset
+    const aim = pointerX != null ? clamp((pointerX - paddle.x) / (paddle.w || 1), -1, 1) * 0.55 : 0;
+    const angle = -Math.PI / 2 + aim + rand(-0.08, 0.08);
+    spawnBall(paddle.x, PADDLE_Y - 10, angle);
+    sfx.shoot();
+    return true;
+  }
+
+  /**
+   * Multiply every ball currently on screen by `factor` (2×, 3×, …).
+   * Extra balls fan out with slightly different angles.
+   * If no balls exist, spawn `factor` balls at (x, y).
+   */
+  function multiplyBalls(factor, originX, originY) {
+    const mult = Math.max(2, Math.floor(factor));
+    if (balls.length === 0) {
+      const n = Math.min(mult, BALL_MAX);
+      for (let i = 0; i < n; i++) {
+        const t = n === 1 ? 0 : (i / (n - 1)) * 2 - 1;
+        spawnBall(originX, originY, -Math.PI / 2 + t * 0.7);
+      }
+      return n;
+    }
+
+    const snapshot = balls.map((b) => ({ ...b }));
+    const target = Math.min(snapshot.length * mult, BALL_MAX);
+    const extrasNeeded = target - snapshot.length;
+    let added = 0;
+
+    for (const src of snapshot) {
+      if (added >= extrasNeeded) break;
+      // Create (mult - 1) copies per existing ball until we hit the target
+      for (let k = 1; k < mult && added < extrasNeeded; k++) {
+        const speed = Math.hypot(src.vx, src.vy) || BALL_SPEED;
+        const baseAng = Math.atan2(src.vy, src.vx);
+        const spread = (k % 2 === 0 ? 1 : -1) * (0.28 + k * 0.12);
+        const ang = baseAng + spread;
+        balls.push(makeBall(src.x, src.y, ang, speed));
+        added++;
       }
     }
+
+    return added;
   }
 
   function destroyBrick(b, idx) {
@@ -441,11 +456,19 @@
     }
     sfx.brick();
     score += 50 * level;
-    if (b.special && b.power) {
-      dropPowerup(b.x + b.w / 2 - 10, b.y, b.power);
-      score += 25;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+
+    if (b.special && b.mult) {
+      const gained = multiplyBalls(b.mult, cx, cy);
+      sfx.multi();
+      floatText(cx, cy - 8, `${b.mult}× BALLS`, "#63b3ed");
+      score += 40 * b.mult;
+      burst(cx, cy, "#f6e05e", 16 + gained);
+    } else {
+      burst(cx, cy, b.color, 12);
     }
-    burst(b.x + b.w / 2, b.y + b.h / 2, b.color, 12);
+
     bricks.splice(idx, 1);
     setHigh(score);
     updateHud();
@@ -463,9 +486,24 @@
     updateHud();
   }
 
+  function bounceBallOffRect(ball, rect) {
+    const overlapL = ball.x + ball.r - rect.x;
+    const overlapR = rect.x + rect.w - (ball.x - ball.r);
+    const overlapT = ball.y + ball.r - rect.y;
+    const overlapB = rect.y + rect.h - (ball.y - ball.r);
+    const minX = Math.min(overlapL, overlapR);
+    const minY = Math.min(overlapT, overlapB);
+    if (minX < minY) {
+      ball.vx *= -1;
+      ball.x += ball.vx > 0 ? minX : -minX;
+    } else {
+      ball.vy *= -1;
+      ball.y += ball.vy > 0 ? minY : -minY;
+    }
+  }
+
   // ─── Update ─────────────────────────────────────────────────
   function update(dt) {
-    // stars
     for (const s of stars) {
       s.y += s.sp * dt;
       if (s.y > H) {
@@ -474,7 +512,6 @@
       }
     }
 
-    // particles
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
       p.life -= dt;
@@ -500,75 +537,35 @@
     if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) paddle.x -= speed * dt;
     if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) paddle.x += speed * dt;
     if (pointerX != null) {
-      // smooth follow pointer when mouse/touch active
-      const target = pointerX;
-      paddle.x += (target - paddle.x) * Math.min(1, 14 * dt);
+      paddle.x += (pointerX - paddle.x) * Math.min(1, 14 * dt);
     }
     paddle.x = clamp(paddle.x, paddle.w / 2 + 4, W - paddle.w / 2 - 4);
 
-    if (wideTimer > 0) {
-      wideTimer -= dt;
-      if (wideTimer <= 0) paddle.w = PADDLE_BASE_W;
-    }
-    if (rapidTimer > 0) rapidTimer -= dt;
-
-    // fire
-    laserCooldown = Math.max(0, laserCooldown - dt);
-    if (fireHeld || keys.has(" ") || keys.has("Spacebar") || pointerDown) fireLaser();
-
-    // lasers
-    for (let i = lasers.length - 1; i >= 0; i--) {
-      const L = lasers[i];
-      L.y += L.vy * dt;
-      if (L.y + L.h < 0) {
-        lasers.splice(i, 1);
-        continue;
-      }
-
-      // hit bricks
-      let hit = false;
-      for (let j = bricks.length - 1; j >= 0; j--) {
-        const b = bricks[j];
-        if (rectsOverlap(L, b)) {
-          destroyBrick(b, j);
-          lasers.splice(i, 1);
-          hit = true;
-          break;
-        }
-      }
-      if (hit) continue;
-
-      // hit invaders
-      for (const inv of invaders) {
-        if (!inv.alive) continue;
-        if (rectsOverlap(L, inv)) {
-          killInvader(inv);
-          lasers.splice(i, 1);
-          hit = true;
-          break;
-        }
-      }
+    // Fire one breakout ball only when none are in play
+    if (fireHeld || keys.has(" ") || keys.has("Spacebar")) {
+      fireBall();
     }
 
-    // balls (breakout style)
+    // Balls — break bricks, destroy invaders, bounce
     for (let i = balls.length - 1; i >= 0; i--) {
       const ball = balls[i];
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
 
+      // walls
       if (ball.x - ball.r < 0) {
         ball.x = ball.r;
-        ball.vx *= -1;
+        ball.vx = Math.abs(ball.vx);
       } else if (ball.x + ball.r > W) {
         ball.x = W - ball.r;
-        ball.vx *= -1;
+        ball.vx = -Math.abs(ball.vx);
       }
       if (ball.y - ball.r < 0) {
         ball.y = ball.r;
-        ball.vy *= -1;
+        ball.vy = Math.abs(ball.vy);
       }
 
-      // paddle
+      // paddle bounce
       const pBox = { x: paddle.x - paddle.w / 2, y: PADDLE_Y, w: paddle.w, h: paddle.h };
       if (
         ball.vy > 0 &&
@@ -578,8 +575,8 @@
         ball.x <= pBox.x + pBox.w
       ) {
         const hitPos = (ball.x - paddle.x) / (paddle.w / 2);
-        const angle = -Math.PI / 2 + hitPos * 1.0;
-        const sp = Math.hypot(ball.vx, ball.vy) * 1.02;
+        const angle = -Math.PI / 2 + clamp(hitPos, -1, 1) * 1.05;
+        const sp = Math.min(Math.hypot(ball.vx, ball.vy) * 1.02, BALL_SPEED * 1.45);
         ball.vx = Math.cos(angle) * sp;
         ball.vy = Math.sin(angle) * sp;
         ball.y = PADDLE_Y - ball.r - 1;
@@ -587,53 +584,41 @@
       }
 
       // bricks
+      let hitBrick = false;
       for (let j = bricks.length - 1; j >= 0; j--) {
         const b = bricks[j];
         const box = { x: ball.x - ball.r, y: ball.y - ball.r, w: ball.r * 2, h: ball.r * 2 };
         if (rectsOverlap(box, b)) {
-          // simple bounce resolution
-          const overlapL = ball.x + ball.r - b.x;
-          const overlapR = b.x + b.w - (ball.x - ball.r);
-          const overlapT = ball.y + ball.r - b.y;
-          const overlapB = b.y + b.h - (ball.y - ball.r);
-          const minX = Math.min(overlapL, overlapR);
-          const minY = Math.min(overlapT, overlapB);
-          if (minX < minY) ball.vx *= -1;
-          else ball.vy *= -1;
+          bounceBallOffRect(ball, b);
           destroyBrick(b, j);
+          hitBrick = true;
           break;
         }
       }
 
-      // invaders
-      for (const inv of invaders) {
-        if (!inv.alive) continue;
-        const box = { x: ball.x - ball.r, y: ball.y - ball.r, w: ball.r * 2, h: ball.r * 2 };
-        if (rectsOverlap(box, inv)) {
-          ball.vy *= -1;
-          killInvader(inv);
-          break;
+      // invaders — balls destroy them
+      if (!hitBrick) {
+        for (const inv of invaders) {
+          if (!inv.alive) continue;
+          const box = { x: ball.x - ball.r, y: ball.y - ball.r, w: ball.r * 2, h: ball.r * 2 };
+          if (rectsOverlap(box, inv)) {
+            bounceBallOffRect(ball, inv);
+            // slight speed kick after a kill
+            const sp = Math.hypot(ball.vx, ball.vy);
+            const ang = Math.atan2(ball.vy, ball.vx);
+            ball.vx = Math.cos(ang) * Math.min(sp * 1.04, BALL_SPEED * 1.5);
+            ball.vy = Math.sin(ang) * Math.min(sp * 1.04, BALL_SPEED * 1.5);
+            killInvader(inv);
+            break;
+          }
         }
       }
 
       if (ball.y - ball.r > H) balls.splice(i, 1);
     }
 
-    // powerups
-    for (let i = powerups.length - 1; i >= 0; i--) {
-      const p = powerups[i];
-      p.y += p.vy * dt;
-      const pBox = { x: paddle.x - paddle.w / 2, y: PADDLE_Y, w: paddle.w, h: paddle.h };
-      if (rectsOverlap(p, pBox)) {
-        applyPower(p.type);
-        powerups.splice(i, 1);
-      } else if (p.y > H) {
-        powerups.splice(i, 1);
-      }
-    }
-
     // invaders movement
-    const alive = invaders.filter((i) => i.alive);
+    const alive = invaders.filter((inv) => inv.alive);
     if (alive.length) {
       let minX = Infinity;
       let maxX = -Infinity;
@@ -657,15 +642,12 @@
         else inv.x += step;
       }
 
-      // reach bottom / paddle line
       if (maxY + (drop ? invaderDrop : 0) >= PADDLE_Y - 4) {
         loseLife();
-        // push invaders back up slightly so player can recover
         for (const inv of alive) inv.y -= invaderDrop * 2;
         if (state !== "playing") return;
       }
 
-      // enemy fire
       invaderShootTimer -= dt;
       if (invaderShootTimer <= 0 && alive.length) {
         invaderShootTimer = Math.max(0.55, 1.6 - level * 0.1);
@@ -685,7 +667,6 @@
       const s = enemyShots[i];
       s.y += s.vy * dt;
 
-      // blocked by bricks
       let blocked = false;
       for (let j = bricks.length - 1; j >= 0; j--) {
         const b = bricks[j];
@@ -708,19 +689,11 @@
       if (s.y > H) enemyShots.splice(i, 1);
     }
 
-    // win condition: all invaders dead AND all bricks cleared
-    const invadersLeft = invaders.some((i) => i.alive);
-    if (!invadersLeft && bricks.length === 0) {
-      score += 200 * level;
-      setHigh(score);
-      updateHud();
-      nextLevel();
-      return;
-    }
-    // if invaders gone but bricks remain, still advance (optional soft clear)
-    if (!invadersLeft && bricks.length > 0) {
-      // bonus clear remaining bricks slowly or just advance
-      score += 100 * level + bricks.length * 10;
+    // win: clear invaders
+    const invadersLeft = invaders.some((inv) => inv.alive);
+    if (!invadersLeft) {
+      const brickBonus = bricks.length * 10;
+      score += 200 * level + brickBonus;
       setHigh(score);
       updateHud();
       nextLevel();
@@ -739,7 +712,6 @@
     }
     ctx.globalAlpha = 1;
 
-    // subtle grid near bottom
     ctx.strokeStyle = "rgba(79, 209, 197, 0.06)";
     ctx.beginPath();
     ctx.moveTo(0, PADDLE_Y + 20);
@@ -758,14 +730,18 @@
     ctx.roundRect(x, y, paddle.w, paddle.h, 4);
     ctx.fill();
 
-    // cannon
-    ctx.fillStyle = "#99f6e4";
-    ctx.fillRect(paddle.x - 3, y - 6, 6, 8);
-
-    if (rapidTimer > 0) {
-      ctx.strokeStyle = "rgba(99, 179, 237, 0.7)";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x - 2, y - 2, paddle.w + 4, paddle.h + 4);
+    // ready-to-launch cue when no balls in play
+    if (balls.length === 0 && state === "playing") {
+      ctx.fillStyle = "rgba(246, 173, 85, 0.9)";
+      ctx.beginPath();
+      ctx.arc(paddle.x, y - 10, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 247, 214, 0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = "#99f6e4";
+      ctx.fillRect(paddle.x - 3, y - 6, 6, 8);
     }
   }
 
@@ -778,13 +754,12 @@
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    if (b.special) {
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      ctx.font = "bold 11px sans-serif";
+    if (b.special && b.mult) {
+      ctx.fillStyle = "rgba(10, 14, 26, 0.9)";
+      ctx.font = "bold 10px ui-monospace, monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      const icon = { multi: "◎", wide: "↔", laser: "⚡", life: "♥" }[b.power] || "★";
-      ctx.fillText(icon, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
+      ctx.fillText(`${b.mult}×`, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
     }
 
     ctx.strokeStyle = "rgba(0,0,0,0.25)";
@@ -802,15 +777,11 @@
     const col = colors[inv.row % colors.length];
 
     ctx.fillStyle = col;
-    // body
     ctx.fillRect(x + 4, y + 6, w - 8, h - 8);
-    // head
     ctx.fillRect(x + 8, y + 2, w - 16, 6);
-    // eyes
     ctx.fillStyle = "#050810";
     ctx.fillRect(x + 8, y + 8, 5, 4);
     ctx.fillRect(x + w - 13, y + 8, 5, 4);
-    // legs alternating
     ctx.fillStyle = col;
     const phase = Math.sin(inv.anim * 2) > 0;
     if (phase) {
@@ -833,15 +804,6 @@
     for (const b of bricks) drawBrick(b);
     for (const inv of invaders) if (inv.alive) drawInvader(inv);
 
-    // lasers
-    ctx.fillStyle = "#63b3ed";
-    ctx.shadowColor = "#63b3ed";
-    ctx.shadowBlur = 8;
-    for (const L of lasers) {
-      ctx.fillRect(L.x, L.y, L.w, L.h);
-    }
-    ctx.shadowBlur = 0;
-
     // enemy shots
     ctx.fillStyle = "#fc8181";
     ctx.shadowColor = "#fc8181";
@@ -851,35 +813,22 @@
     }
     ctx.shadowBlur = 0;
 
-    // balls
+    // breakout balls
     for (const ball of balls) {
       const g = ctx.createRadialGradient(ball.x - 2, ball.y - 2, 1, ball.x, ball.y, ball.r);
       g.addColorStop(0, "#fff7d6");
       g.addColorStop(1, "#f6ad55");
       ctx.fillStyle = g;
+      ctx.shadowColor = "#f6ad55";
+      ctx.shadowBlur = 8;
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // powerups
-    for (const p of powerups) {
-      const colors = { multi: "#f6ad55", wide: "#4fd1c5", laser: "#63b3ed", life: "#fc8181" };
-      ctx.fillStyle = colors[p.type] || "#fff";
-      ctx.beginPath();
-      ctx.roundRect(p.x, p.y, p.w, p.h, 4);
-      ctx.fill();
-      ctx.fillStyle = "#0a0e1a";
-      ctx.font = "bold 12px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      const icon = { multi: "◎", wide: "↔", laser: "⚡", life: "♥" }[p.type] || "★";
-      ctx.fillText(icon, p.x + p.w / 2, p.y + p.h / 2 + 0.5);
-    }
+    ctx.shadowBlur = 0;
 
     drawPaddle();
 
-    // particles
     for (const p of particles) {
       ctx.globalAlpha = Math.max(0, p.life / p.max);
       ctx.fillStyle = p.color;
@@ -889,7 +838,6 @@
     }
     ctx.globalAlpha = 1;
 
-    // floating scores
     ctx.textAlign = "center";
     ctx.font = "bold 12px sans-serif";
     for (const f of floatingTexts) {
@@ -899,18 +847,15 @@
     }
     ctx.globalAlpha = 1;
 
-    // active power timers
     if (state === "playing") {
       ctx.font = "11px ui-monospace, monospace";
       ctx.textAlign = "left";
       ctx.fillStyle = "rgba(232,238,252,0.55)";
-      let ty = H - 14;
-      if (wideTimer > 0) {
-        ctx.fillText(`WIDE ${wideTimer.toFixed(1)}s`, 10, ty);
-        ty -= 14;
-      }
-      if (rapidTimer > 0) {
-        ctx.fillText(`RAPID ${rapidTimer.toFixed(1)}s`, 10, ty);
+      ctx.fillText(`BALLS ${balls.length}`, 10, H - 14);
+      if (balls.length === 0) {
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(246, 173, 85, 0.75)";
+        ctx.fillText("SPACE / CLICK — launch ball", W / 2, H - 14);
       }
     }
 
@@ -946,7 +891,6 @@
     muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
   });
 
-  // Polyfill roundRect if needed
   if (!CanvasRenderingContext2D.prototype.roundRect) {
     CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
       const radius = typeof r === "number" ? r : 0;
@@ -965,12 +909,8 @@
   muteBtn.textContent = muted ? "Sound: Off" : "Sound: On";
   muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
   spawnStars();
-  // preview empty stage art
   buildBricks();
   buildInvaders();
-  invaders.forEach((i) => {
-    i.alive = true;
-  });
   updateHud();
   requestAnimationFrame(frame);
 })();
